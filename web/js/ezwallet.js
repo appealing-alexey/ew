@@ -63,6 +63,13 @@
         return [version, hash];
     }
 
+    var keysAsBase58 = function(){
+        var result = [];
+        for(var i in Keys){
+            if(i != null) result.push(i);
+        }
+        return result;
+    }
     encode_length = function(len) {
         if (len < 0x80)
             return [len];
@@ -735,14 +742,7 @@ function compareBlockDesc(a, b){
         UI.sendBy = 'address'
     }
 
-    function smtpHostPortAvailable(){
-        if ($("#smtpHost").val() == '') return false;
-        if ($("#smtpPort").val() == '') return false;
-        return true;
-    }
-
     function homeSendByEmailForm(){
-        settingsGet()
         $('#homeSendMessageDiv').show()
         $('#homeSendPasswordDiv').show()
         $('#homeSendToEmailDiv').show()
@@ -917,6 +917,17 @@ function compareBlockDesc(a, b){
 //        $('#qrscanText').html('Could not read the QR code.')
     }
 
+
+    function homeTransactionsShow(){
+        getWalletTransactions();
+        $("#homeTransactions").show();
+        $("#homeMainForm").hide();
+    }
+
+    function homeTransactionsHide(){
+        $("#homeMainForm").show();
+        $("#homeTransactions").hide();
+    }
 
     function homeReceiveForm(){
         $('#homeReceiveForm').show()
@@ -1471,14 +1482,16 @@ function compareBlockDesc(a, b){
         }
     }
     function hideTestEmailModal(){
-        $("#from-email").val('')
-        $("#to-email").val('')
-        $("#email-msg").val('')
+        $("#from-email").val('');
+        $("#to-email").val('');
+        $("#email-msg").val('');
+        $("#email-password").val('');
+        $("#test-email-sending-info").html('');
         $(".email-modal-wrapper").hide();
     }
 
     function showTestEmailModal(){
-        $(".email-modal-wrapper").show()
+        $(".email-modal-wrapper").show();
     }
 
     function sendTestEmail(){
@@ -1486,7 +1499,7 @@ function compareBlockDesc(a, b){
             email_host: $('#smtpHost').val(),
             email_port: parseInt($('#smtpPort').val()),
             email_username: $('#smtpUsername').val(),
-            email_password: $('#smtpPassword').val()
+            email_password: $('#smtpPassword').val(),
         }
         var emailMsg = {
             sender: $("#from-email").val(),
@@ -1501,8 +1514,10 @@ function compareBlockDesc(a, b){
             if(result.status == 'Error'){
                 if(result.pythonerror != null){
                     $("#test-email-sending-info").html("<p>Error report.</p><pre>"+result.pythonerror+"</pre>")
-                }else{
+                }else if(result.error != null){
                     $("#test-email-sending-info").html("<p>Error report.</p><pre>"+result.error+"</pre>")
+                }else{
+                    $("#test-email-sending-info").html("<p>Error report.</p><pre>"+result.message+"</pre>")
                 }
             }
             if(result.status == 'OK'){
@@ -1511,21 +1526,15 @@ function compareBlockDesc(a, b){
 
         }
         $("#test-email-sending-info").html(WaitingIcon);
-        var buf = { emailConfig: emailConfig, emailMsg: emailMsg}
+        var buf = { emailConfig: emailConfig, emailMsg: emailMsg, password: SettingsPassword.get()};
         $.post('cgi-bin/testemail.py', JSON.stringify(buf),
             callback, 'text' )
     }
 
     function sendTransactionEmail(emailTx){
-        if (smtpHostPortAvailable()){
-            $("#sendingInfo").html(WaitingIcon)
-            $.post('cgi-bin/emailbitcoins.py', JSON.stringify(emailTx),
+        $("#sendingInfo").html(WaitingIcon)
+        $.post('cgi-bin/emailbitcoins.py', JSON.stringify(emailTx),
                    transactionEmailSent, 'text')
-        } else {
-            //email msg in dialog
-            alert("SMTP host and port not set.")
-            showEmailCode();
-        }
     }
 
     function showEmailCode(){
@@ -2727,6 +2736,139 @@ alert('No keys found.')
             txGetUnspent();
     }
 
+    function cleanNumber(buf){
+        buf = buf.split("").reverse().join("");
+        var result = "";
+        var cleaning = true;
+        for (var i=0; i<buf.length; i++){
+            if(cleaning == false){
+                result += buf[i];
+                continue;
+            }
+            if(buf[i] == '0'){
+
+            }else if(/^[1-9]$/.test(buf[i])){
+                cleaning = false;
+                result += buf[i];
+            }else{ //buf[i] == '.'
+                cleaning = false;
+            }
+        }
+        return result.split("").reverse().join("");
+    }
+    function placeTxnsInTable(data){
+        var ds = {
+            cols: {
+                time: {index:1, type: "date", friendly: 'Time'},
+                addrs: { index: 2, type: 'string', friendly: 'Bitcoin Address' },
+                txid: {index: 3, type: 'string', friendly: 'Transaction'},
+                fee: {index: 4, type: 'number', friendly: 'Fee (BTC)', decimals: 12},
+                amt: {index: 5, type: 'number', friendly: 'Amount (BTC)', decimals: 12},
+
+            },
+            rows: data
+        }
+        function formatTable(){
+            $("#transactions-table tbody td:nth-child(4)").each(function(i,e){
+                var temp = cleanNumber($(e).html());
+                if(temp == "0")temp = "";
+                $(e).html(temp);
+            });
+            $("#transactions-table tbody td:nth-child(5)").each(function(i,e){
+                var t = cleanNumber($(e).html());
+                var cls = 'negative';
+                if(t[0] != '-'){
+                    t = "&nbsp;"+t;
+                    cls = 'positive';
+                }
+                $(e).html("<span class='"+cls+"'>"+t+"</span>");
+            })
+        }
+        $("#transactions-table").html("");
+        var table = $("#transactions-table").WATable({
+            tableCreated: formatTable,
+            rowClicked: formatTable,
+            columnClicked: formatTable,
+            pageChanged: formatTable,
+            pageSizeChanged: formatTable,
+        }).data('WATable');
+        table.setData(ds);
+    }
+    function getWalletTransactions(){
+        var addresses = keysAsBase58();
+        function sendingTrans(txn){
+            var inputs = txn.inputs;
+            var inputAddresses = [];
+            var totalInputs = 0;
+            for(var j=0; j<inputs.length; j++){
+                totalInputs += inputs[j].prev_out.value;
+                inputAddresses.push(inputs[j].prev_out.addr);
+            }
+            var outputs = txn.out;
+            var totalOutputs = 0;
+            var sentOutput = 0;
+            for(var j=0; j<outputs.length; j++){
+                totalOutputs += outputs[j].value;
+                if(addresses.indexOf(outputs[j].addr) == -1){
+                    sentOutput += outputs[j].value;
+                }
+            }
+            var fee = totalInputs - totalOutputs;
+            return {
+                time: new Date(txn.time*1000),
+                addrs: inputAddresses.join("<br />"),
+                amt: sathoshi2num(-1*sentOutput),
+                fee: sathoshi2num(fee),
+                txid: "<a target=_blank href='https://blockchain.info/tx/"+txn.hash+"'>"+txn.hash.substring(0,8)+"...</a>"
+            };
+        }
+        function receivingTrans(txn){
+            var outputs = txn.out;
+            var outputAddresses = [];
+            var totalOutputs = 0;
+            for(var j=0; j<outputs.length; j++){
+                if(addresses.indexOf(outputs[j].addr) != -1){
+                    outputAddresses.push(outputs[j].addr);
+                    totalOutputs += outputs[j].value;
+                }
+            }
+            return {
+                time: new Date(txn.time*1000),
+                addrs: outputAddresses.join("<br />"),
+                amt: sathoshi2num(totalOutputs),
+                fee: null,
+                txid: "<a target=_blank href='https://blockchain.info/tx/"+txn.hash+"'>"+txn.hash.substring(0,8)+"...</a>"
+            };
+        }
+
+        function cback(i){
+            console.log('cback');
+            var txns = i.txs;
+            var results = [];
+            for(var i=0; i<txns.length; i++){
+                if(txns[i].result>0) results.push(receivingTrans(txns[i]));
+                else results.push(sendingTrans(txns[i]));
+            }
+            placeTxnsInTable(results);
+        }
+        var param = '';
+        for(var i=1; i<addresses.length; i++){
+            var address = addresses[i];
+            param += addresses[i] + '|';
+
+        }
+        param += addresses[0];
+        var baseUrl = 'http://blockchain.info/multiaddr?cors=true&active='+param;
+        $.ajax({
+            type: 'GET',
+            url: baseUrl,
+            success: function(i,j,k){
+                cback(i);
+            },
+            error: function(i,j,k){  console.log('err')}
+        })
+    }
+
     function txOnChangeSec() {
         clearTimeout(timeout);
         timeout = setTimeout(txGenSrcAddr, TIMEOUT);
@@ -3067,14 +3209,56 @@ alert(tx)
     }
 
     function settingsGet(){
-        var jo, jos, ba, s
+        var jo, jos;
         jo = {}
         jo.action = 'get'
         jos = JSON.stringify(jo)
         $.post('cgi-bin/settings.py', jos, settingsGetShow, 'text')
     }
 
-    var SmtpInitiated = false
+    var SettingsPassword = function(){
+        var val = null;
+        return {
+            set: function(v){val = v;},
+            get: function(){ return val;},
+            clear: function(){ val = null;}
+        }
+    }();
+
+    function settingsLogin(){
+        var pword = $("#login-password").val();
+        var jo = {action: 'get', password: pword};
+        var jos = JSON.stringify(jo);
+        function testCallback(arg){
+            var result = JSON.parse(arg);
+            if(result.status == 'Error'){
+                alert(result.message);
+            }else{
+                SettingsPassword.set(pword);
+                settingsGetShow(arg);
+                $("#login-password").val('');
+                $("#settings-actual-li").show();
+                $("#settings-li").hide();
+                $("#settingsActual").click();
+            }
+            //settingsGetShow(arg)
+        }
+        $.post('cgi-bin/settings.py', jos, testCallback, 'text');
+    }
+
+    function hideSettingsActual(){
+        SettingsPassword.clear();
+        $("#settings-actual-li").hide();
+        $("#settings-li").show();
+        $("#settingsSend .btn").removeClass('active');
+        $("#settingsUnspent .btn").removeClass('active');
+        $("#smtpHost").val('');
+        $("#smtpPort").val('');
+        $("#smtpUsername").val('');
+        $("#smtpPassword").val('');
+        $("#settings-password-change").val('');
+    }
+
     function smtpSettingsSet(e){
         var p = $("#smtpPort").val()
         if (p != '' && isNaN(parseInt(p))){
@@ -3082,35 +3266,39 @@ alert(tx)
             return;
         }
         e.data = {}
-        e.data.f = 'email'
         e.data.v = {
-            host: $("#smtpHost").val(),
-            port: $("#smtpPort").val(),
-            username: $("#smtpUsername").val(),
-            password: $("#smtpPassword").val()
+            send: $("#settingsSend .active").attr('data-val'),
+            unspent: $("#settingsUnspent .active").attr('data-val'),
+            email: {
+                host: $("#smtpHost").val(),
+                port: $("#smtpPort").val(),
+                username: $("#smtpUsername").val(),
+                password: $("#smtpPassword").val()
+            }
         }
-        SmtpInitiated = true
         settingsSet(e)
     }
 
-    function smtpSettingsDone(){
-        alert("Setting updated.")
 
+    function settingsSetCallback(data){
+        var res = JSON.parse(data, '', '  ');
+        if(res.status == 'Error'){
+            alert(res.message);
+        }else{
+            alert("Settings updated.");
+        }
     }
-
     function settingsSet(e){
 //      alert(e.data.f + ' ' +e.data.v)
         var jo, jos, ba, s
         jo = {}
         jo.action = 'set'
-        jo.field = e.data.f
         jo.value = e.data.v
-        jo.password = $('#settingsPassword').val()
+        jo.password = SettingsPassword.get();
         jos = JSON.stringify(jo)
-        $.post('cgi-bin/settings.py', jos, settingsGetShow, 'text')
+        $.post('cgi-bin/settings.py', jos, settingsSetCallback, 'text')
     }
 
-    var SettingsPasswordHash = ''
     function settingsGetShow(data){
         res = JSON.parse(data, '', '  ')
         var isError = false;
@@ -3123,16 +3311,10 @@ alert(tx)
         $("#smtpHost").val(res.smtphost)
         $("#smtpPort").val(res.smtpport)
         $("#smtpUsername").val(res.smtpusername)
-        SettingsPasswordHash = res.hash
-        if (SmtpInitiated){
-            if(isError == false) smtpSettingsDone();
-            SmtpInitiated = false;
-        }
     }
 
     $(document).ready( function() {
 //alert('ready')
-
         if (window.location.hash)
             $('#tab-' + window.location.hash.substr(1)).tab('show');
 
@@ -3152,6 +3334,8 @@ alert(tx)
         $("#showEmailCodeBtn").click(showEmailCode);
         $('#homeScanBtn').click(homeScan);
         $('#homeScanCloseBtn').click(homeScanClose);
+        $("#homeTransactionsBtn").click(homeTransactionsShow);
+        $("#homeTransactionsBackBtn").click(homeTransactionsHide);
         $('#homeReceiveBtn').click(homeReceiveForm);
         $('#homeReceiveBackBtn').click(homeReceiveBack);
         $('#homeRedeemBtn').click(homeRedeemForm);
@@ -3190,20 +3374,19 @@ alert(tx)
 
         $('#debugShowKeys').click(debugShowKeys);
 
-        $('#settingsLink').click(settingsInit);
-        $('#settingsSendBtn_blockchain').click({f:'send', v:'blockchain'}, settingsSet);
-        $('#settingsSendBtn_electrum').click({f:'send', v:'electrum'}, settingsSet);
-        $('#settingsUnspentBtn_blockchain').click({f:'unspent', v:'blockchain'}, settingsSet);
-        $('#settingsUnspentBtn_electrum').click({f:'unspent', v:'electrum'}, settingsSet);
-        $('#settingsUnspentBtn_blockexplorer').click({f:'unspent', v:'blockexplorer'}, settingsSet);
-
+        $("#settings-login-btn").click(settingsLogin);
         $('#smtpSettingsBtn').click(smtpSettingsSet);
-
+        $("#settingsCloseBtn").click(function(){$("#tab-home").click();});
         $("#send-test-email-btn").click(sendTestEmail);
         $("#cancel-test-email-btn").click(hideTestEmailModal);
         $("#smtpTestBtn").click(showTestEmailModal);
         hideTestEmailModal();
         $(".email-modal-wrapper").css("visibility","visible");
+        $("a[data-toggle='tab']").on('shown', function(e){
+            if($(e.relatedTarget).attr('id') == 'settingsActual'){
+                hideSettingsActual();
+            }
+        });
 /*
         // generator
 
