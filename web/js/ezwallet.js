@@ -1533,8 +1533,11 @@ function compareBlockDesc(a, b){
 
     function sendTransactionEmail(emailTx){
         $("#sendingInfo").html(WaitingIcon)
-        $.post('cgi-bin/emailbitcoins.py', JSON.stringify(emailTx),
+        var msg = JSON.stringify(emailTx);
+        $("#debugEmailJson").val(msg);
+        $.post('cgi-bin/emailbitcoins.py', msg,
                    transactionEmailSent, 'text')
+
     }
 
     function showEmailCode(){
